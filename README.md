@@ -26,3 +26,5 @@ This Shiny app is dedicated to visualizing as well as forecasting the COVID data
 
 - "Cssegisanddata/COVID-19". 2021. Github. https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data.
 
+### Link to the presentation: https://livejohnshopkins-my.sharepoint.com/:v:/r/personal/srajend8_jh_edu/Documents/videoCapstoneProject.mov?csf=1&web=1&e=napblJ
+
