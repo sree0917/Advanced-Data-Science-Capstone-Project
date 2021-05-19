@@ -1,0 +1,305 @@
+---
+title: "COVID Data Analysis and Prediction"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, echo = FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(flexdashboard)
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+library(zoo)
+```
+
+
+# Viewing the time series
+## Column {.sidebar}
+```{r,echo = FALSE, warning = FALSE}
+library(flexdashboard)
+dateInput("startDate", label = "Choose the start date: ", 
+                value = "01-25-2020",
+                min = "2020-01-25", max = as.Date(format(Sys.time())),
+                format = "yyyy-mm-dd",
+                startview = "month",
+                weekstart = 0,
+                language = "en",
+                width = NULL,
+                autoclose = TRUE)
+
+dateInput("endDate", label = "Choose the end date: ",
+                value = as.Date(format(Sys.time())),
+                min = "2020-01-25", max = as.Date(format(Sys.time())),
+                format = "yyyy-mm-dd",
+                startview = "month",
+                weekstart = 0,
+                language = "en",
+                width = NULL,
+                autoclose = TRUE
+          )
+
+tempData = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+countries = tempData[[2]]
+countries = c(countries, "World")
+
+countries = sort(countries)
+selectInput("country", "Region",
+  countries,
+  selected = "World",
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL)
+
+checkboxInput("movingAverage", "Show the 7-day moving average", value = FALSE, width = NULL)
+radioButtons(
+  "type",
+  "Type of data",
+  choices = list("Total number of cases", "Daily increase in the number of cases")
+  )
+
+radioButtons(
+  "info",
+  "Type of Case",
+  choices = list("Confirmed", "Deaths")
+  )
+
+radioButtons(
+        "predictionType",
+        "Select the model you would like to use for forecasting and go to the next page to view the forecast result",
+        choices = list("ARIMA", "SVM", "Polynomial Regression")
+)
+
+```
+
+
+## Column (data-width = 700)
+### Analyzing the time series for a desired region
+```{r, echo = FALSE, warning = FALSE}
+fileUrl = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+
+
+renderPlot({
+        if (input$info == "Confirmed") filename = "confirmed_global.csv"
+        #else if (input$info == "Recovered") filename = "recovered_global.csv" 
+        else filename = "deaths_global.csv"
+        rawData = read_csv(paste0(fileUrl, filename))
+
+        cumulativeData = rawData[,c(-1,-3,-4)] %>% 
+        group_by(`Country/Region`) %>% 
+        summarise(across(everything(), sum)) %>% 
+        ungroup()
+        countries = cumulativeData[[1]]
+        timeSeries = cumulativeData[,-1]
+        dates = colnames(timeSeries)
+        cumulativeData = t(timeSeries) %>% as.data.frame()
+        colnames(cumulativeData) = countries
+        rownames(cumulativeData) = NULL
+        cumulativeData = cbind("Date" = dates, cumulativeData)
+        cumulativeData$Date = as.Date(cumulativeData$Date, "%m/%d/%y")
+        world = rowSums(cumulativeData[,-1])
+        cumulativeData$World = as.numeric(world)
+        
+
+        # Calculating the daily cases
+        dailyData = NULL
+        for(i in seq(2, ncol(cumulativeData)-1)){
+        dailyData = cbind(dailyData,diff(cumulativeData[[i]]))
+        }
+        dailyData = as.data.frame(dailyData)
+        colnames(dailyData) = countries
+        dailyData = cbind(Date = as.Date(dates[-1], "%m/%d/%y"), dailyData)
+        dailyData$World = diff(cumulativeData$World)
+        
+        # Moving average for the cumulative data
+        movingAverageCumulative = cbind("Date" = as.Date(dates, "%m/%d/%y"), rbind(matrix(0, 6,193),rollmean(cumulativeData[-1], k = 7)))
+        movingAverageCumulative = as.data.frame(movingAverageCumulative) 
+        combinedDataCumulative = cbind(movingAverageCumulative %>% select('MovingAverage' = input$country), cumulativeData %>% select('TotalCases' = input$country))
+        combinedDataCumulative = cbind("Date" = as.Date(dates, "%m/%d/%y"), combinedDataCumulative)
+        combinedDataCumulativeToPlot = combinedDataCumulative %>% pivot_longer(!Date, names_to = "Type", values_to = "TotalCases")
+        combinedDataCumulativeToPlot = combinedDataCumulativeToPlot[combinedDataCumulativeToPlot$Date >= input$startDate & combinedDataCumulativeToPlot$Date <= input$endDate,]
+        
+        # Moving average for the daily cases
+        movingAverageDaily = cbind("Date" = as.Date(dates[-1], "%m/%d/%y"), rbind(matrix(0, 6,193),rollmean(dailyData[-1], k = 7)))
+        movingAverageDaily = as.data.frame(movingAverageDaily)
+        combinedDataDaily = cbind(movingAverageDaily %>% select('MovingAverage' = input$country), dailyData %>% select('DailyIncrease' = input$country))
+        combinedDataDaily = cbind("Date" = as.Date(dates[-1], "%m/%d/%y"), combinedDataDaily)
+        combinedDataDailyToPlot = combinedDataDaily %>% pivot_longer(!Date, names_to = "Type", values_to = "DailyCases")
+        combinedDataDailyToPlot = combinedDataDailyToPlot[combinedDataDailyToPlot$Date >= input$startDate & combinedDataDailyToPlot$Date <= input$endDate,] 
+        
+        if(input$type == "Total number of cases"){
+                if(input$movingAverage == FALSE){
+                        selectedData = cumulativeData %>% select(Date, input$country)  
+                        elongatedData = selectedData %>% pivot_longer(!Date, names_to = "Country", values_to = "Count")
+                        dataToPlot = elongatedData[elongatedData$Date >= input$startDate & elongatedData$Date <= input$endDate,]   
+                        ggplot(dataToPlot, aes(x = Date, y = Count, col = Country)) + geom_line() + xlab("Date") + ylab(paste0("Total number of cases (", input$info, ")")) + theme_minimal() + theme(legend.position = "none")
+                }else{
+                        ggplot(combinedDataCumulativeToPlot, aes(x = Date, y = TotalCases, col = Type)) + geom_line() + theme(legend.title = element_blank()) + xlab("Date") + ylab(paste0("Total number of cases (", input$info, ")")) + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6)) 
+                }
+        }
+        else{
+                if(input$movingAverage == FALSE){
+                        selectedData = dailyData %>% select(Date, input$country)  
+                        elongatedData = selectedData %>% pivot_longer(!Date, names_to = "Country", values_to = "Count")
+                        dataToPlot = elongatedData[elongatedData$Date >= input$startDate & elongatedData$Date <= input$endDate,]   
+                        ggplot(dataToPlot, aes(x = Date, y = Count, col = Country)) + geom_line()  + xlab("Date") + ylab(paste0("Daily increase in the number of cases (", input$info, ")")) + theme_minimal() + theme(legend.position = "none")
+                }else{
+                        ggplot(combinedDataDailyToPlot, aes(x = Date, y = DailyCases, col = Type)) + geom_line() + theme(legend.title = element_blank()) + xlab("Date") + ylab(paste0("Daily increase in the number of cases (", input$info, ")")) + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6))
+                }   
+        }
+})
+
+```
+
+
+
+# Forecast
+### The plot of the forecast for the next 28 days based on the data from 01/25/2020 for the country selected in the previous page is shown here
+```{r, echo = FALSE, warning = FALSE}
+fileUrl = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+library(e1071)
+library(forecast)
+
+renderPlot({
+        if (input$info == "Confirmed") filename = "confirmed_global.csv"
+        else filename = "deaths_global.csv"
+        rawData = read_csv(paste0(fileUrl, filename))
+
+        cumulativeData = rawData[,c(-1,-3,-4)] %>% 
+        group_by(`Country/Region`) %>% 
+        summarise(across(everything(), sum)) %>% 
+        ungroup()
+        countries = cumulativeData[[1]]
+        timeSeries = cumulativeData[,-1]
+        dates = colnames(timeSeries)
+        cumulativeData = t(timeSeries) %>% as.data.frame()
+        colnames(cumulativeData) = countries
+        rownames(cumulativeData) = NULL
+        cumulativeData = cbind("Date" = dates, cumulativeData)
+        cumulativeData$Date = as.Date(cumulativeData$Date, "%m/%d/%y")
+        world = rowSums(cumulativeData[,-1])
+        cumulativeData$World = as.numeric(world)
+        
+
+        # Calculating the daily cases
+        dailyData = NULL
+        for(i in seq(2, ncol(cumulativeData)-1)){
+        dailyData = cbind(dailyData,diff(cumulativeData[[i]]))
+        }
+        dailyData = as.data.frame(dailyData)
+        colnames(dailyData) = countries
+        dailyData = cbind(Date = as.Date(dates[-1], "%m/%d/%y"), dailyData)
+        dailyData$World = diff(cumulativeData$World)
+        
+        # Moving average for the cumulative data
+        movingAverageCumulative = cbind("Date" = as.Date(dates, "%m/%d/%y"), rbind(matrix(0, 6,193),rollmean(cumulativeData[-1], k = 7)))
+        movingAverageCumulative = as.data.frame(movingAverageCumulative) 
+        combinedDataCumulative = cbind(movingAverageCumulative %>% select('MovingAverage' = input$country), cumulativeData %>% select('TotalCases' = input$country))
+        combinedDataCumulative = cbind("Date" = as.Date(dates, "%m/%d/%y"), combinedDataCumulative)
+        
+        # Moving average for the daily cases
+        movingAverageDaily = cbind("Date" = as.Date(dates[-1], "%m/%d/%y"), rbind(matrix(0, 6,193),rollmean(dailyData[-1], k = 7)))
+        movingAverageDaily = as.data.frame(movingAverageDaily)
+        combinedDataDaily = cbind(movingAverageDaily %>% select('MovingAverage' = input$country), dailyData %>% select('DailyIncrease' = input$country))
+        combinedDataDaily = cbind("Date" = as.Date(dates[-1], "%m/%d/%y"), combinedDataDaily)
+        
+        if(input$type == "Total number of cases"){
+                if(input$predictionType == "SVM"){
+                        
+                        x = as.numeric(cumulativeData$Date) - min(as.numeric(cumulativeData$Date)) + 1
+                        y = combinedDataCumulative$MovingAverage
+                        svmData = data.frame(x, y)
+                        svmModel = svm(y~x,data = svmData, type="eps-regression", kernel ="radial")
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        predY = predict(svmModel, newdata = data.frame(x = predX))
+                        toPlot = rbind(data.frame("X" = predX, "Y" = predY, "Type" = "Prediction"), data.frame("X" = x, "Y" = y, "Type" = "Original"))
+                        ggplot(toPlot, aes(X,Y, col = Type)) + geom_line() + ggtitle("Forecast using Support Vector Machine") + ylab(paste0("Total number of cases (",input$info,")")) + xlab("Days since 01/25/2020") + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6))
+                        
+                }else if(input$predictionType == "Polynomial Regression"){
+                        x = as.numeric(cumulativeData$Date) - min(as.numeric(cumulativeData$Date)) + 1
+                        y = combinedDataCumulative$MovingAverage
+                        polyData = data.frame(x, y)
+                        polyModel = lm(y ~ poly(x , 4, raw=TRUE), data = polyData)
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        predY = predict(polyModel, newdata = data.frame(x = predX))
+                        toPlot = rbind(data.frame("X" = predX, "Y" = predY, "Type" = "Prediction"), data.frame("X" = x, "Y" = y, "Type" = "Original"))
+                        ggplot(toPlot, aes(X,Y, col = Type)) + geom_line() + ggtitle("Forecast using polynomial regression of order 4") + ylab(paste0("Total number of cases (",input$info,")")) + xlab("Days since 01/25/2020") + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6))
+                         
+                }
+                else{
+                        x = as.numeric(cumulativeData$Date) - min(as.numeric(cumulativeData$Date)) + 1
+                        y = combinedDataCumulative$MovingAverage
+                        polyData = data.frame(x, y)
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        autoArimaFit <- auto.arima(y)
+                        predY = forecast(autoArimaFit, h=28)
+                        plot(predY,title("Forecast using ARIMA"))
+                }
+        }
+        else{
+                if(input$predictionType == "SVM"){
+                        x = as.numeric(dailyData$Date) - min(as.numeric(dailyData$Date)) + 1
+                        y = combinedDataDaily$MovingAverage
+                        svmData = data.frame(x, y)
+                        svmModel = svm(y~x,data = svmData, type="eps-regression", kernel ="radial")
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        predY = predict(svmModel, newdata = data.frame(x = predX))
+                        toPlot = rbind(data.frame("X" = predX, "Y" = predY, "Type" = "Prediction"), data.frame("X" = x, "Y" = y, "Type" = "Original")) 
+                        ggplot(toPlot, aes(X,Y, col = Type)) + geom_line() + ggtitle("Forecast using Support Vector Machine") + ylab(paste0("Daily increase in the number of cases (",input$info,")")) + xlab("Days since 01/25/2020") + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6))
+                }else if(input$predictionType == "Polynomial Regression"){
+                        x = as.numeric(dailyData$Date) - min(as.numeric(dailyData$Date)) + 1
+                        y = combinedDataDaily$MovingAverage
+                        polyData = data.frame(x, y)
+                        polyModel = lm(y ~ poly(x , 4, raw=TRUE), data = polyData)
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        predY = predict(polyModel, newdata = data.frame(x = predX))
+                        toPlot = rbind(data.frame("X" = predX, "Y" = predY, "Type" = "Prediction"), data.frame("X" = x, "Y" = y, "Type" = "Original")) + theme_minimal() 
+                        ggplot(toPlot, aes(X,Y, col = Type)) + geom_line() + ggtitle("Forecast using polynomial regression of order 4") + ylab(paste0("Daily increase in the number of cases (",input$info,")")) + xlab("Days since 01/25/2020") + theme_minimal() + theme(  legend.position = c(.95, .95),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(6, 6, 6, 6))
+                }   
+                else{
+                        x = as.numeric(dailyData$Date) - min(as.numeric(dailyData$Date)) + 1
+                        y = combinedDataDaily$MovingAverage
+                        polyData = data.frame(x, y)
+                        predX = c(x, seq(x[length(x)]+1,x[length(x)]+28))
+                        autoArimaFit <- auto.arima(y)
+                        predY = forecast(autoArimaFit, h=28)
+                        plot(predY, ylab = paste0("Total number of cases (",input$info,")"))
+                }
+        }
+})
+
+```
+
+
+# Further information
+#### This app is inspired by the documentation, "Coronavirus (COVID-19) Visualization & Prediction". 2021. Kaggle.Com. https://www.kaggle.com/therealcyberlord/coronavirus-covid-19-visualization-prediction/log#Predictions-for-confirmed-coronavirus-cases-worldwide.
+
+#### Source of data: "Cssegisanddata/COVID-19". 2021. Github. https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data.
+
+#### App creator: Sreelakshmi Rajendrakumar
+
+
+
+
